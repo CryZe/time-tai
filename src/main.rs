@@ -1,10 +1,12 @@
-use std::ops::Sub;
+use std::ops::{Add, Sub};
 
 use time::{macros::datetime, Date, Duration, OffsetDateTime};
 
 fn main() {
     // let ts = OffsetDateTime::now_utc();
     let before = datetime!(1972-06-30 23:59:59 UTC);
+    // let before = datetime!(1973-07-01 00:00:00 UTC);
+    // dbg!(OffsetDateTime::from(TaiDateTime::from(before)));
     // dbg!(before.unix_timestamp());
     // dbg!(to_tai(before));
 
@@ -59,7 +61,8 @@ const LEAP_SECONDS: &[(i64, i64)] = &[
     (3692217600 - LEAP_BASE_OFFSET, 37), // 1 Jan 2017
 ];
 
-const EXPIRES_AT: i64 = 3896899200 - LEAP_BASE_OFFSET;
+const EXPIRES_AT_UTC: i64 = 3896899200 - LEAP_BASE_OFFSET;
+const EXPIRES_AT_TAI: i64 = EXPIRES_AT_UTC + LEAP_SECONDS[LEAP_SECONDS.len() - 1].1;
 
 #[derive(Debug)]
 struct TaiDateTime(Duration);
@@ -97,6 +100,14 @@ impl Sub for TaiDateTime {
 
     fn sub(self, rhs: Self) -> Self::Output {
         self.0 - rhs.0
+    }
+}
+
+impl Add<Duration> for TaiDateTime {
+    type Output = Self;
+
+    fn add(self, rhs: Duration) -> Self::Output {
+        Self(self.0 + rhs)
     }
 }
 
@@ -211,7 +222,7 @@ fn read_additional_leap_seconds() -> Option<Box<[(i64, i64)]>> {
             } else {
                 diff += 1;
             }
-            if time_stamp >= EXPIRES_AT {
+            if time_stamp >= EXPIRES_AT_UTC {
                 list.push((time_stamp, diff));
             }
         }
@@ -271,7 +282,7 @@ fn read_additional_leap_seconds() -> Option<Box<[(i64, i64)]>> {
             _ => continue,
         }
 
-        if time_stamp >= EXPIRES_AT {
+        if time_stamp >= EXPIRES_AT_UTC {
             elements.push((time_stamp, diff));
         }
     }
@@ -287,7 +298,7 @@ impl From<OffsetDateTime> for TaiDateTime {
         let unix_time_stamp = time - OffsetDateTime::UNIX_EPOCH;
 
         #[cfg(any(windows, unix))]
-        if unix_time_stamp.whole_seconds() >= EXPIRES_AT {
+        if unix_time_stamp.whole_seconds() >= EXPIRES_AT_UTC {
             let leap_seconds = ADDITIONAL_LEAP_SECONDS
                 .get_or_init(|| read_additional_leap_seconds().unwrap_or_default());
 
@@ -309,5 +320,33 @@ impl From<OffsetDateTime> for TaiDateTime {
             .unwrap_or((0, FIRST_LEAP_SECONDS_DIFF));
 
         Self(unix_time_stamp + Duration::new(diff, 0))
+    }
+}
+
+impl From<TaiDateTime> for OffsetDateTime {
+    fn from(time: TaiDateTime) -> Self {
+        #[cfg(any(windows, unix))]
+        if time.0.whole_seconds() >= EXPIRES_AT_TAI {
+            let leap_seconds = ADDITIONAL_LEAP_SECONDS
+                .get_or_init(|| read_additional_leap_seconds().unwrap_or_default());
+
+            if let Some((_, diff)) = leap_seconds
+                .iter()
+                .cloned()
+                .rev()
+                .find(|&(t, diff)| t + diff <= time.0.whole_seconds())
+            {
+                return OffsetDateTime::UNIX_EPOCH + (time.0 - Duration::new(diff, 0));
+            }
+        }
+
+        let (_, diff) = LEAP_SECONDS
+            .iter()
+            .cloned()
+            .rev()
+            .find(|&(t, diff)| t + diff <= time.0.whole_seconds())
+            .unwrap_or((0, FIRST_LEAP_SECONDS_DIFF));
+
+        OffsetDateTime::UNIX_EPOCH + (time.0 - Duration::new(diff, 0))
     }
 }
